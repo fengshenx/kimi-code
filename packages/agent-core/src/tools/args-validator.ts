@@ -3,13 +3,13 @@ import Ajv2019 from 'ajv/dist/2019';
 import Ajv2020 from 'ajv/dist/2020';
 import addFormats from 'ajv-formats';
 
-const DRAFT_07_AJV = new Ajv({ strict: false, allErrors: true });
+const DRAFT_07_AJV = new Ajv({ strict: false, allErrors: true, coerceTypes: true });
 addFormats(DRAFT_07_AJV);
 
-const DRAFT_2019_AJV = new Ajv2019({ strict: false, allErrors: true });
+const DRAFT_2019_AJV = new Ajv2019({ strict: false, allErrors: true, coerceTypes: true });
 addFormats(DRAFT_2019_AJV);
 
-const DRAFT_2020_AJV = new Ajv2020({ strict: false, allErrors: true });
+const DRAFT_2020_AJV = new Ajv2020({ strict: false, allErrors: true, coerceTypes: true });
 addFormats(DRAFT_2020_AJV);
 
 const DRAFT_2019_KEYWORDS = new Set([
