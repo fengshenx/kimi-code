@@ -14,6 +14,7 @@ import { DEFAULT_AGENT_PROFILES } from '../../profile';
 import { extendWorkspaceWithSkillRoots } from '../../skill';
 import * as b from '../../tools/builtin';
 import type { ToolStore, ToolStoreData, ToolStoreKey } from '../../tools/store';
+import type { WorkspaceConfig } from '../../tools/support/workspace';
 import type {
   BuiltinTool,
   McpServerRegistrationResult,
@@ -41,6 +42,11 @@ export class ToolManager {
   private mcpAccessPatterns: string[] = [];
   protected readonly store: Partial<ToolStoreData> = {};
   private mcpToolStatusUnsubscribe: (() => void) | undefined;
+  private _workspace: WorkspaceConfig | undefined;
+
+  get workspace(): WorkspaceConfig | undefined {
+    return this._workspace;
+  }
 
   constructor(protected readonly agent: Agent) {
     this.attachMcpTools();
@@ -371,6 +377,7 @@ export class ToolManager {
       },
       this.agent.skills?.registry.getSkillRoots() ?? [],
     );
+    this._workspace = workspace;
     const allowBackground =
       this.enabledTools.has('TaskList') &&
       this.enabledTools.has('TaskOutput') &&

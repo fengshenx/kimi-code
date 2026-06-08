@@ -39,6 +39,7 @@ import { abortable, userCancellationReason } from '../../utils/abort';
 import { USER_PROMPT_ORIGIN, type PromptOrigin } from '../context';
 import { renderUserPromptHookBlockResult, renderUserPromptHookResult } from '../../session/hooks';
 import { canonicalTelemetryArgs, isPlainRecord } from './canonical-args';
+import { extractFileMentions, readFileForMention } from './file-mention';
 import { ToolCallDeduplicator } from './tool-dedup';
 
 interface ActiveTurn {
@@ -450,6 +451,7 @@ export class TurnFlow {
         ended = promptHookEnded.event;
         blockedByUserPromptHook = promptHookEnded.blocked;
       } else {
+        await this.preReadFileMentions(input, turnId, signal);
         const stopReason = await this.runStepLoop(turnId, signal);
         completedStopReason = stopReason;
         ended = {
@@ -564,6 +566,52 @@ export class TurnFlow {
       content: hookResult.message,
     });
     return undefined;
+  }
+
+  private async preReadFileMentions(
+    input: readonly ContentPart[],
+    turnId: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const mentions = extractFileMentions(input);
+    if (mentions.length === 0) return;
+    const workspace = this.agent.tools.workspace;
+    if (workspace === undefined) return;
+
+    const results = await Promise.all(
+      mentions.map((mention) => readFileForMention(this.agent.kaos, workspace, mention, signal)),
+    );
+
+    for (let i = 0; i < mentions.length; i++) {
+      const result = results[i]!;
+      if (result === null) continue;
+      const toolCallId = result.assistantMessage.toolCalls[0]!.id;
+      this.agent.emitEvent({
+        type: 'tool.call.started',
+        turnId,
+        toolCallId,
+        name: 'Read',
+        args: { file_path: mentions[i]! },
+        description: `Reading ${mentions[i]!}`,
+        display: { kind: 'file_io', operation: 'read', path: mentions[i]! },
+      });
+      this.agent.context.appendMessage({
+        ...result.assistantMessage,
+        origin: { kind: 'system_trigger', name: 'file_mention_preread' },
+      });
+      this.agent.context.appendMessage({
+        ...result.toolMessage,
+        origin: { kind: 'system_trigger', name: 'file_mention_preread' },
+      });
+      this.agent.emitEvent({
+        type: 'tool.result',
+        turnId,
+        toolCallId,
+        output: result.output,
+        isError: false,
+        synthetic: true,
+      });
+    }
   }
 
   private async runStepLoop(turnId: number, signal: AbortSignal): Promise<LoopTurnStopReason> {
