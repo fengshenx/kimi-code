@@ -1,6 +1,91 @@
+---
+outline: 2
+---
+
 # Changelog
 
 This page documents the changes in each Kimi Code CLI release.
+
+## 0.14.0 (2026-06-10)
+
+### Features
+
+- Add an `Interrupt` hook event that fires when the user interrupts a turn (e.g. pressing Esc), letting hooks observe the turn stopping instead of getting stuck on a working state.
+
+### Bug Fixes
+
+- Preserve image outputs from tools when using OpenAI-compatible chat completions.
+
+## 0.13.1 (2026-06-10)
+
+### Bug Fixes
+
+- Prevent forking sessions during active turns and consolidate wire protocol definitions into a shared internal package.
+- Fix Kimi Datasource to use the matching OAuth credentials and service endpoint for the active Kimi Code environment.
+- Fix goal marker text overflowing terminal width.
+
+### Polish
+
+- Add Claude Fable 5 support to the Anthropic provider.
+- Add an interactive undo selector and clearer undo-limit messages.
+- YOLO mode no longer asks before writing or editing files outside the working directory.
+- Clarify active skill prompts so loaded skills are no longer represented as system reminders.
+- Tighten file tool guidance to route incremental edits through Edit.
+
+## 0.13.0 (2026-06-10)
+
+### Features
+
+- Add custom color themes. Define your own palette as a JSON file in `~/.kimi-code/themes/`, or generate one with the built-in `/custom-theme` skill command.
+- Add `/import-from-cc-codex` to import selected Claude Code and Codex instructions, Skills, and MCP settings.
+- Show available plugin updates in the marketplace.
+
+### Bug Fixes
+
+- Fix Windows builds and development launches that could fail when package binaries resolve to command shims.
+- Fix device login to keep the URL and code visible when the browser cannot be opened.
+
+### Polish
+
+- Clarify grouped subagent progress with active status breakdowns and elapsed time.
+- Truncate queued message display to a single line with ellipsis when it exceeds terminal width.
+
+## 0.12.1 (2026-06-09)
+
+### Bug Fixes
+
+- Allow obsolete experimental config entries to remain without blocking startup.
+- Pass through xhigh reasoning effort for OpenAI-compatible chat completions requests.
+
+## 0.12.0 (2026-06-09)
+
+### Features
+
+- Add the `/swarm` command for running agent swarms with live progress and rate-limit-aware retries.
+- Make goals, background questions, and sub-skill discovery available without experimental opt-ins.
+- Honor the standard `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY` environment variables, including SOCKS proxies, for all outbound traffic.
+- Support Homebrew installations.
+- Enable micro compaction by default. Disable via `/experiments`.
+
+### Bug Fixes
+
+- Fix ACP slash skill routing, bootstrap context reads, file and permission edge cases, subagent event handling, and stale-file edit messaging.
+- Fix goal resume behavior by restoring goal state from agent records.
+- Fix thinking text and tool output display for subagents.
+- Fix session workdir mismatch on Windows caused by inconsistent path separators.
+- Fix the `/mcp` status panel border being broken by multi-line MCP server errors, which are now folded onto a single row.
+- Detect Git Bash installed through Scoop and other Git shims on Windows.
+- Show the underlying error when migration fails.
+- Allow the startup session picker to exit with repeated Ctrl-C or Ctrl-D.
+
+### Polish
+
+- Remove the per-turn auto-compaction limit so long conversations can keep compacting instead of failing early.
+- Improve goal mode outcome handling with follow-up messages, safer error pauses, and clearer TUI transcript display.
+- Show full plan cards directly and remove the Plan card keyboard shortcut.
+- Wrap long single-line shell commands in approval prompts so the full command remains visible.
+- Rework file reference completion in the TUI.
+- Load Kimi-specific user Skills and global agent instructions from `KIMI_CODE_HOME` when it is set.
 
 ## 0.11.0 (2026-06-05)
 

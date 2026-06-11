@@ -17,7 +17,7 @@ Some commands are only available in the idle state. Executing these commands whi
 | `/provider` | — | Open the interactive provider manager to view, add, and remove configured providers. See [Platforms & Models — `/provider` and provider management](../configuration/providers.md#provider-与供应商管理) | Yes |
 | `/model` | — | Switch the LLM model used in the current session | Yes |
 | `/settings` | `/config` | Open the settings panel inside the TUI | Yes |
-| `/experiments` | `/experimental` | Open the experimental feature panel. Confirm changes to persist them to `config.toml` and reload the current session | Yes |
+| `/experiments` | `/experimental` | Open the experimental feature panel | Yes |
 | `/permission` | — | Select a permission mode | Yes |
 | `/editor` | — | Configure the external editor launched by `Ctrl-G` | Yes |
 | `/theme` | — | Switch the terminal UI color theme | Yes |
@@ -32,6 +32,7 @@ Some commands are only available in the idle state. Executing these commands whi
 | `/fork` | — | Fork a new session from the current one, preserving the full conversation history | No |
 | `/title [<text>]` | `/rename` | Without arguments, display the current session title; with an argument, set a new title (max 200 characters) | Yes |
 | `/compact [<instruction>]` | — | Compact the current conversation context to free up token usage; an optional custom instruction can hint to the model what to preserve | No |
+| `/undo [<count>]` | — | Undo recent prompts from the active context. Without a count, opens a selector; with a count, undoes that many prompts. Prompts before the last compaction cannot be undone | No |
 | `/reload` | — | Reload the current session and apply the latest `config.toml` settings (providers, models, etc.) and `tui.toml` UI preferences, without restarting the CLI | No |
 | `/reload-tui` | — | Reload only the `tui.toml` UI preferences (theme, editor, notifications, etc.) without rebuilding the session | Yes |
 | `/init` | — | Analyze the current codebase and generate `AGENTS.md` | No |
@@ -48,26 +49,13 @@ Some commands are only available in the idle state. Executing these commands whi
 | `/plan clear` | — | Clear the current plan | No |
 | `/swarm on\|off` | — | Turn swarm mode on or off without sending a prompt. | Yes |
 | `/swarm <task>` | — | Turn swarm mode on, then send `<task>` as a normal prompt. If the turn completes normally, swarm mode turns off automatically. In `manual` permission mode, Kimi Code asks whether to switch to `auto` before starting. | No |
-| `/goal [...]` | — | Start or manage an autonomous goal (experimental feature; enable it from `/experiments`, `[experimental].goal_command`, or `KIMI_CODE_EXPERIMENTAL_GOAL_COMMAND=1`) | See below |
+| `/goal [...]` | — | Start or manage an autonomous goal | See below |
 
 ::: warning
 `/yolo` skips approval for regular tool calls. Please make sure you understand the potential risks before enabling it. Plan mode exit approval is not bypassed by `/yolo`; `Bash` inside Plan mode is still subject to the regular `/yolo` allow rules.
 :::
 
-## Autonomous Goal (Experimental)
-
-::: info
-`/goal` is an experimental command. Enable it from `/experiments`, or write it in `~/.kimi-code/config.toml`:
-```toml
-[experimental]
-goal_command = true
-```
-
-You can also override the setting for one process with an environment variable:
-```sh
-KIMI_CODE_EXPERIMENTAL_GOAL_COMMAND=1 kimi
-```
-:::
+## Autonomous Goal
 
 `/goal` starts or manages goal mode: a persistent objective that Kimi Code works toward across automatically continuing turns. For usage guidance and examples, see [Goals](../guides/goals.md).
 
@@ -100,7 +88,7 @@ If an upcoming goal needs to start with `manage`, put `--` after `next`:
 In non-interactive prompt mode, only the create forms start goal mode:
 
 ```sh
-KIMI_CODE_EXPERIMENTAL_GOAL_COMMAND=1 kimi -p "/goal Fix the failing checkout test"
+kimi -p "/goal Fix the failing checkout test"
 ```
 
 Prompt mode exits with code `0` when the goal completes, `3` when it blocks, and `6` when it pauses. Other `/goal` subcommands, including `next`, are TUI controls and are not handled by `kimi -p`.
@@ -124,6 +112,20 @@ Prompt mode exits with code `0` when the goal completes, `3` when it blocks, and
 | --- | --- | --- | --- |
 | `/exit` | `/quit`, `/q` | Exit Kimi Code CLI | No |
 
+## Built-in skill commands
+
+Kimi Code CLI ships with a set of built-in Skills that appear directly as `/<name>` slash commands. Unlike external Skills, they do not require the `skill:` prefix and are available out of the box.
+
+| Command | Description |
+| --- | --- |
+| `/mcp-config` | Configure MCP servers and handle MCP OAuth login. See [MCP](../customization/mcp.md) |
+| `/custom-theme [<text>]` | Create or edit a custom TUI color theme. See [Themes](../customization/themes.md) |
+| `/update-config` | Inspect or edit `config.toml` (model, provider, permission, hooks) and `tui.toml` (theme, editor, notifications, auto-update) |
+| `/import-from-cc-codex` | Import Claude Code and Codex instructions, skills, and MCP settings into Kimi Code |
+| `/sub-skill` | Discover and reorganize the local skill inventory into hierarchical sub-skill bundles. Includes `/sub-skill.review` (read-only proposal) and `/sub-skill.consolidate` (apply the reorganization) |
+
+All built-in Skill commands are only available in the idle state.
+
 ## Skill Dynamic Commands
 
 Activated external Skills are automatically registered as slash commands with the `skill:` namespace prefix:
@@ -136,7 +138,7 @@ For example, `/skill:code-style` loads the Skill named `code-style` and sends it
 
 For convenience, external Skill commands also support a shorthand form that omits the `skill:` prefix — `/<name>` — as long as the name is not taken by a system slash command. That is, `/code-style` falls back to matching `/skill:code-style`.
 
-Built-in Skills shipped with Kimi Code CLI, such as `mcp-config`, appear directly as `/<name>` in the slash command panel for cases like configuring MCP servers and handling MCP OAuth login.
+Built-in Skills shipped with Kimi Code CLI appear directly as `/<name>` in the slash command panel. For example, `/mcp-config` helps configure MCP servers and handle MCP OAuth login, and `/custom-theme [extra text]` invokes the custom-theme workflow to create or edit a TUI theme.
 
 ::: info
 All Skill commands are only available in the idle state. `flow`-type Skills are also exposed via `/skill:<name>` — there is no separate `/flow:` namespace.

@@ -20,6 +20,7 @@ import {
   resolveKimiHome,
   writeConfigFile,
   type KimiConfig,
+  type McpServerConfig,
   type MoonshotServiceConfig,
 } from '../config';
 import {
@@ -51,7 +52,6 @@ import type {
   CreateSessionPayload,
   EmptyPayload,
   EnterSwarmPayload,
-  GoalControlPayload,
   GoalSnapshot,
   GoalToolResult,
   ExportSessionPayload,
@@ -62,7 +62,6 @@ import type {
   GetKimiConfigPayload,
   GetPluginInfoPayload,
   InstallPluginPayload,
-  JsonObject,
   ListSessionsPayload,
   McpServerInfo,
   McpStartupMetrics,
@@ -100,12 +99,9 @@ import { KaosShellNotFoundError, LocalKaos, type Kaos } from '@moonshot-ai/kaos'
 import type { ToolServices } from '../tools/support/services';
 
 const KIMI_CODE_PROVIDER_NAME = 'managed:kimi-code';
-const GOAL_FORK_CLEARED_REMINDER = [
-  'This fork does not have a current goal.',
-  'Ignore earlier active-goal reminders from the source session.',
-  'Handle requests normally unless the user starts a new goal.',
-].join(' ');
-
+const KIMI_CODE_BASE_URL_ENV = 'KIMI_CODE_BASE_URL';
+const KIMI_CODE_OAUTH_HOST_ENV = 'KIMI_CODE_OAUTH_HOST';
+const KIMI_OAUTH_HOST_ENV = 'KIMI_OAUTH_HOST';
 type AgentScopedPayload<T> = T & { readonly agentId: string };
 type SessionScopedPayload<T> = T & { readonly sessionId: string };
 type SessionAgentPayload<T> = SessionScopedPayload<AgentScopedPayload<T>>;
@@ -383,10 +379,16 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
   async forkSession(input: ForkSessionPayload): Promise<ResumeSessionResult> {
     const source = await this.sessionStore.get(input.sessionId);
     const active = this.sessions.get(source.id);
-    let sourceHadGoal = hasGoalMetadata(source.metadata) || hasGoalMetadata(input.metadata);
+    if (active?.hasActiveTurn === true) {
+      throw new KimiError(
+        ErrorCodes.SESSION_FORK_ACTIVE_TURN,
+        `Session "${source.id}" cannot be forked while a turn is running`,
+        { details: { sessionId: source.id } },
+      );
+    }
+
     if (active !== undefined) {
       await active.flushMetadata();
-      sourceHadGoal = sourceHadGoal || active.goals.getGoal().goal !== null;
     }
 
     const id = input.id ?? createSessionId();
@@ -396,19 +398,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
       title: input.title,
       metadata: input.metadata,
     });
-    const resumed = await this.resumeSession({ sessionId: id });
-    if (sourceHadGoal) {
-      const forked = this.sessions.get(id);
-      if (forked !== undefined) {
-        const mainAgent = await forked.ensureAgentResumed('main');
-        mainAgent.context.appendSystemReminder(GOAL_FORK_CLEARED_REMINDER, {
-          kind: 'system_trigger',
-          name: 'goal_fork_cleared',
-        });
-        await forked.flushMetadata();
-      }
-    }
-    return resumed;
+    return this.resumeSession({ sessionId: id });
   }
 
   async listSessions(input: ListSessionsPayload = {}): Promise<readonly SessionSummary[]> {
@@ -673,32 +663,32 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
   createGoal({
     sessionId,
     ...payload
-  }: SessionScopedPayload<CreateGoalPayload>): Promise<GoalSnapshot> {
+  }: SessionAgentPayload<CreateGoalPayload>): Promise<GoalSnapshot> {
     return Promise.resolve(this.sessionApi(sessionId).createGoal(payload));
   }
 
-  getGoal({ sessionId, ...payload }: SessionScopedPayload<EmptyPayload>): GoalToolResult {
-    return this.sessionApi(sessionId).getGoal(payload);
+  getGoal({ sessionId, ...payload }: SessionAgentPayload<EmptyPayload>): Promise<GoalToolResult> {
+    return Promise.resolve(this.sessionApi(sessionId).getGoal(payload));
   }
 
   pauseGoal({
     sessionId,
     ...payload
-  }: SessionScopedPayload<GoalControlPayload>): Promise<GoalSnapshot> {
+  }: SessionAgentPayload<EmptyPayload>): Promise<GoalSnapshot> {
     return Promise.resolve(this.sessionApi(sessionId).pauseGoal(payload));
   }
 
   resumeGoal({
     sessionId,
     ...payload
-  }: SessionScopedPayload<GoalControlPayload>): Promise<GoalSnapshot> {
+  }: SessionAgentPayload<EmptyPayload>): Promise<GoalSnapshot> {
     return Promise.resolve(this.sessionApi(sessionId).resumeGoal(payload));
   }
 
   cancelGoal({
     sessionId,
     ...payload
-  }: SessionScopedPayload<GoalControlPayload>): Promise<GoalSnapshot> {
+  }: SessionAgentPayload<EmptyPayload>): Promise<GoalSnapshot> {
     return Promise.resolve(this.sessionApi(sessionId).cancelGoal(payload));
   }
 
@@ -819,7 +809,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
   }
 
   private mergePluginMcpConfig(base: SessionMcpConfig | undefined): SessionMcpConfig | undefined {
-    const pluginServers = this.plugins.enabledMcpServers();
+    const pluginServers = this.withManagedKimiPluginEnv(this.plugins.enabledMcpServers());
     if (Object.keys(pluginServers).length === 0) return base;
     return {
       servers: {
@@ -827,6 +817,36 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
         ...pluginServers,
       },
     };
+  }
+
+  private withManagedKimiPluginEnv(
+    pluginServers: Record<string, McpServerConfig>,
+  ): Record<string, McpServerConfig> {
+    const managedEnv = this.managedKimiCodeEnvForPlugins();
+    if (Object.keys(managedEnv).length === 0) return pluginServers;
+
+    const out: Record<string, McpServerConfig> = {};
+    for (const [name, server] of Object.entries(pluginServers)) {
+      out[name] =
+        server.transport === 'stdio'
+          ? { ...server, env: { ...server.env, ...managedEnv } }
+          : server;
+    }
+    return out;
+  }
+
+  private managedKimiCodeEnvForPlugins(): Record<string, string> {
+    const provider = this.config.providers[KIMI_CODE_PROVIDER_NAME];
+    const envBaseUrl = process.env[KIMI_CODE_BASE_URL_ENV];
+    const envOAuthHost = process.env[KIMI_CODE_OAUTH_HOST_ENV] ?? process.env[KIMI_OAUTH_HOST_ENV];
+    const hasEnvOverride = envBaseUrl !== undefined || envOAuthHost !== undefined;
+    const baseUrl =
+      envBaseUrl !== undefined ? envBaseUrl.replace(/\/+$/, '') : provider?.baseUrl;
+    const oauthHost = hasEnvOverride ? envOAuthHost : provider?.oauth?.oauthHost;
+    const env: Record<string, string> = {};
+    if (baseUrl !== undefined) env[KIMI_CODE_BASE_URL_ENV] = baseUrl;
+    if (oauthHost !== undefined) env[KIMI_CODE_OAUTH_HOST_ENV] = oauthHost;
+    return env;
   }
 
   private sessionApi(sessionId: string): SessionAPIImpl {
@@ -943,10 +963,6 @@ function serviceCredentials(
 function nonEmptyString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
-}
-
-function hasGoalMetadata(metadata: JsonObject | undefined): boolean {
-  return metadata !== undefined && 'goal' in metadata;
 }
 
 function requiredWorkDir(operation: string, value: string): string {

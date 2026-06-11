@@ -6,7 +6,6 @@ import {
   type Component,
   type Focusable,
   getCapabilities,
-  type SlashCommand,
   Spacer,
 } from '@earendil-works/pi-tui';
 import type { MigrationPlan } from '@moonshot-ai/migration-legacy';
@@ -21,7 +20,6 @@ import type {
   PromptPart,
   Session,
 } from '@moonshot-ai/kimi-code-sdk';
-import chalk from 'chalk';
 import { resolve } from 'pathe';
 
 import type { CLIOptions } from '#/cli/options';
@@ -65,11 +63,18 @@ import { SessionReplayRenderer } from './controllers/session-replay';
 import { StreamingUIController } from './controllers/streaming-ui';
 import { TasksBrowserController } from './controllers/tasks-browser';
 import { installRainbowDance } from './easter-eggs/dance';
-import { FileMentionProvider } from './components/editor/file-mention-provider';
+import {
+  FileMentionProvider,
+  type SlashAutocompleteCommand,
+} from './components/editor/file-mention-provider';
 import { AssistantMessageComponent } from './components/messages/assistant-message';
 import { BackgroundAgentStatusComponent } from './components/messages/background-agent-status';
 import { CronMessageComponent } from './components/messages/cron-message';
-import { GoalCompletionMessageComponent } from './components/messages/goal-panel';
+import { buildGoalMarker } from './components/messages/goal-markers';
+import {
+  GoalCompletionMessageComponent,
+  GoalSetMessageComponent,
+} from './components/messages/goal-panel';
 import { SkillActivationComponent } from './components/messages/skill-activation';
 import {
   NoticeMessageComponent,
@@ -96,9 +101,8 @@ import { registerReverseRPCHandlers } from './reverse-rpc/index';
 import { QuestionController } from './reverse-rpc/question/controller';
 import { createQuestionAskHandler } from './reverse-rpc/question/handler';
 import type { ApprovalPanelData, QuestionPanelData } from './reverse-rpc/types';
-import { createKimiTUIThemeBundle } from './theme/bundle';
-import type { ResolvedTheme } from './theme/colors';
-import type { Theme } from './theme/index';
+import { currentTheme, getColorPalette, getBuiltInPalette, isBuiltInTheme } from './theme';
+import type { ColorToken, ResolvedTheme, ThemeName } from './theme';
 import {
   INITIAL_LIVE_PANE,
   type AppState,
@@ -141,7 +145,6 @@ export interface KimiTUIStartupInput {
   readonly version: string;
   readonly workDir: string;
   readonly startupNotice?: string;
-  readonly resolvedTheme?: ResolvedTheme;
   readonly migrationPlan?: MigrationPlan | null;
   /** When true, run only the migration screen, then exit (the `kimi migrate` command). */
   readonly migrateOnly?: boolean;
@@ -260,7 +263,6 @@ export class KimiTUI {
         model: startupInput.cliOptions.model,
         startupNotice: startupInput.startupNotice,
       },
-      resolvedTheme: startupInput.resolvedTheme,
     };
     this.options = tuiOptions;
     this.migrationPlan = startupInput.migrationPlan ?? null;
@@ -310,10 +312,11 @@ export class KimiTUI {
   }
 
   private setupAutocomplete(): void {
-    const slashCommands: SlashCommand[] = this.getSlashCommands().map((cmd) => {
+    const slashCommands: SlashAutocompleteCommand[] = this.getSlashCommands().map((cmd) => {
       const completer = cmd.completeArgs;
       return {
         name: cmd.name,
+        aliases: cmd.aliases,
         description: cmd.description,
         ...(cmd.argumentHint !== undefined ? { argumentHint: cmd.argumentHint } : {}),
         ...(completer !== undefined
@@ -452,7 +455,7 @@ export class KimiTUI {
       for (const f of result.failed) {
         this.showStatus(
           `Skipped refreshing ${f.provider}: ${f.reason}`,
-          this.state.theme.colors.warning,
+          'warning',
         );
       }
     } catch {
@@ -475,7 +478,7 @@ export class KimiTUI {
     }
     const resumeState = this.session?.getResumeState();
     if (resumeState?.warning !== undefined) {
-      this.showStatus(`Warning: ${resumeState.warning}`, this.state.theme.colors.warning);
+      this.showStatus(`Warning: ${resumeState.warning}`, 'warning');
     }
     if (this.session !== undefined) {
       this.sessionEventHandler.startSubscription();
@@ -490,7 +493,7 @@ export class KimiTUI {
   private async showTmuxKeyboardWarningIfNeeded(): Promise<void> {
     const warning = await detectTmuxKeyboardWarning();
     if (warning === undefined || this.aborted) return;
-    this.showStatus(warning, this.state.theme.colors.warning);
+    this.showStatus(warning, 'warning');
   }
 
   private async init(): Promise<boolean> {
@@ -529,7 +532,7 @@ export class KimiTUI {
           if (resolve(target.workDir) !== resolve(workDir)) {
             this.state.ui.stop();
             process.stderr.write(
-              `${chalk.hex(this.state.theme.colors.warning)(
+              `${currentTheme.fg('warning',
                 `Session "${startup.sessionFlag}" was created under a different directory.\n` +
                   `  cd "${target.workDir}" && kimi -r ${startup.sessionFlag}`,
               )}\n\n`,
@@ -1041,9 +1044,7 @@ export class KimiTUI {
   async syncRuntimeState(session: Session = this.requireSession()): Promise<void> {
     const [status, goalResult] = await Promise.all([
       session.getStatus(),
-      isExperimentalFlagEnabled('goal_command')
-        ? session.getGoal()
-        : Promise.resolve({ goal: null }),
+      session.getGoal(),
     ]);
     this.setAppState({
       sessionId: session.id,
@@ -1193,7 +1194,7 @@ export class KimiTUI {
     }
     const resumeState = session.getResumeState();
     if (resumeState?.warning !== undefined) {
-      this.showStatus(`Warning: ${resumeState.warning}`, this.state.theme.colors.warning);
+      this.showStatus(`Warning: ${resumeState.warning}`, 'warning');
     }
     this.showStatus(statusMessage);
   }
@@ -1221,7 +1222,7 @@ export class KimiTUI {
     this.sessionEventHandler.startSubscription();
     const resumeState = session.getResumeState();
     if (resumeState?.warning !== undefined) {
-      this.showStatus(`Warning: ${resumeState.warning}`, this.state.theme.colors.warning);
+      this.showStatus(`Warning: ${resumeState.warning}`, 'warning');
     }
     this.showStatus(statusMessage);
   }
@@ -1270,11 +1271,7 @@ export class KimiTUI {
   private createTranscriptComponent(entry: TranscriptEntry): Component | null {
     if (entry.compactionData !== undefined) {
       const data = entry.compactionData;
-      const block = new CompactionComponent(
-        this.state.theme.colors,
-        this.state.ui,
-        data.instruction,
-      );
+      const block = new CompactionComponent(this.state.ui, data.instruction);
       block.markDone(data.tokensBefore, data.tokensAfter);
       return block;
     }
@@ -1284,34 +1281,37 @@ export class KimiTUI {
         const images = entry.imageAttachmentIds
           ?.map((id) => this.imageStore.get(id))
           .filter((a): a is ImageAttachment => a?.kind === 'image');
-        return new UserMessageComponent(entry.content, this.state.theme.colors, images);
+        return new UserMessageComponent(entry.content, images);
       }
       case 'skill_activation':
         return new SkillActivationComponent(
           entry.skillName ?? entry.content,
           entry.skillArgs,
-          this.state.theme.colors,
           entry.skillTrigger,
         );
       case 'cron':
-        return new CronMessageComponent(
-          entry.content,
-          entry.cronData ?? {},
-          this.state.theme.colors,
-        );
+        return new CronMessageComponent(entry.content, entry.cronData ?? {});
+      case 'goal':
+        if (entry.goalData?.kind === 'created') {
+          return new GoalSetMessageComponent();
+        }
+        if (entry.goalData?.kind === 'lifecycle') {
+          return buildGoalMarker(
+            entry.goalData.change,
+            this.state.toolOutputExpanded,
+          );
+        }
+        return null;
       case 'assistant': {
         if (entry.content.trimStart().startsWith('✓ Goal complete')) {
-          return new GoalCompletionMessageComponent(entry.content, this.state.theme.colors);
+          return new GoalCompletionMessageComponent(entry.content);
         }
-        const component = new AssistantMessageComponent(
-          this.state.theme.markdownTheme,
-          this.state.theme.colors,
-        );
+        const component = new AssistantMessageComponent();
         component.updateContent(entry.content);
         return component;
       }
       case 'thinking': {
-        const thinking = new ThinkingComponent(entry.content, this.state.theme.colors, true);
+        const thinking = new ThinkingComponent(entry.content, true);
         if (this.state.toolOutputExpanded) thinking.setExpanded(true);
         return thinking;
       }
@@ -1320,33 +1320,25 @@ export class KimiTUI {
           const tc = new ToolCallComponent(
             entry.toolCallData,
             entry.toolCallData.result,
-            this.state.theme.colors,
             this.state.ui,
-            this.state.theme.markdownTheme,
             this.state.appState.workDir,
           );
           if (this.state.toolOutputExpanded) tc.setExpanded(true);
           return tc;
         }
         if (entry.backgroundAgentStatus !== undefined) {
-          return new BackgroundAgentStatusComponent(
-            entry.backgroundAgentStatus,
-            this.state.theme.colors,
-          );
+          return new BackgroundAgentStatusComponent(entry.backgroundAgentStatus);
         }
         return entry.renderMode === 'notice'
-          ? new NoticeMessageComponent(entry.content, entry.detail, this.state.theme.colors)
-          : new StatusMessageComponent(entry.content, this.state.theme.colors, entry.color);
+          ? new NoticeMessageComponent(entry.content, entry.detail)
+          : new StatusMessageComponent(entry.content, entry.color);
       case 'status':
         if (entry.backgroundAgentStatus !== undefined) {
-          return new BackgroundAgentStatusComponent(
-            entry.backgroundAgentStatus,
-            this.state.theme.colors,
-          );
+          return new BackgroundAgentStatusComponent(entry.backgroundAgentStatus);
         }
         return entry.renderMode === 'notice'
-          ? new NoticeMessageComponent(entry.content, entry.detail, this.state.theme.colors)
-          : new StatusMessageComponent(entry.content, this.state.theme.colors, entry.color);
+          ? new NoticeMessageComponent(entry.content, entry.detail)
+          : new StatusMessageComponent(entry.content, entry.color);
       case 'welcome':
         return null;
       default:
@@ -1399,7 +1391,7 @@ export class KimiTUI {
     ) {
       return;
     }
-    const welcome = new WelcomeComponent(this.state.appState, this.state.theme.colors);
+    const welcome = new WelcomeComponent(this.state.appState);
     this.state.transcriptContainer.addChild(welcome);
   }
 
@@ -1424,22 +1416,22 @@ export class KimiTUI {
     this.renderWelcome();
   }
 
-  showStatus(message: string, color?: string): void {
+  showStatus(message: string, color?: ColorToken): void {
     this.state.transcriptContainer.addChild(
-      new StatusMessageComponent(message, this.state.theme.colors, color),
+      new StatusMessageComponent(message, color),
     );
     this.state.ui.requestRender();
   }
 
   showNotice(title: string, detail?: string): void {
     this.state.transcriptContainer.addChild(
-      new NoticeMessageComponent(title, detail, this.state.theme.colors),
+      new NoticeMessageComponent(title, detail),
     );
     this.state.ui.requestRender();
   }
 
   showError(message: string): void {
-    this.showStatus(`Error: ${message}`, this.state.theme.colors.error);
+    this.showStatus(`Error: ${message}`, 'error');
   }
 
   showLoginProgressSpinner(label: string): LoginProgressSpinnerHandle {
@@ -1447,7 +1439,7 @@ export class KimiTUI {
   }
 
   showProgressSpinner(label: string): LoginProgressSpinnerHandle {
-    const tint = (s: string): string => chalk.hex(this.state.theme.colors.primary)(s);
+    const tint = (s: string): string => currentTheme.fg('primary', s);
     const spinner = new MoonLoader(this.state.ui, 'braille', tint, label);
     this.state.transcriptContainer.addChild(new Spacer(1));
     this.state.transcriptContainer.addChild(spinner);
@@ -1455,9 +1447,9 @@ export class KimiTUI {
     return {
       stop: ({ ok, label: finalLabel }) => {
         spinner.stop();
-        const tone = ok ? this.state.theme.colors.success : this.state.theme.colors.error;
+        const tone = ok ? 'success' : 'error';
         const symbol = ok ? '✓' : '✗';
-        spinner.setText(chalk.hex(tone)(`${symbol} ${finalLabel}`));
+        spinner.setText(currentTheme.fg(tone, `${symbol} ${finalLabel}`));
         this.state.ui.requestRender();
       },
     };
@@ -1471,7 +1463,6 @@ export class KimiTUI {
         url: auth.verificationUriComplete,
         code: auth.userCode,
         hint: 'Press Ctrl-C to cancel',
-        colors: this.state.theme.colors,
       }),
     );
     this.state.ui.requestRender();
@@ -1526,7 +1517,7 @@ export class KimiTUI {
       }
       case 'composing': {
         const spinner = this.ensureActivitySpinner('braille', 'working...', (s) =>
-          chalk.hex(this.state.theme.colors.primary)(s),
+          currentTheme.fg('primary', s),
         );
         this.syncAgentSwarmActivitySpinner(undefined);
         this.state.activityContainer.addChild(
@@ -1583,7 +1574,6 @@ export class KimiTUI {
     this.state.queueContainer.addChild(
       new QueuePaneComponent({
         messages: queued,
-        colors: this.state.theme.colors,
         isCompacting: this.state.appState.isCompacting,
         isStreaming: this.state.appState.streamingPhase !== 'idle',
         canSteerImmediately: !this.deferUserMessages,
@@ -1604,29 +1594,31 @@ export class KimiTUI {
   updateEditorBorderHighlight(text?: string): void {
     const trimmed = (text ?? this.state.editor.getText()).trimStart();
     const highlighted = this.state.appState.planMode || trimmed.startsWith('/');
-    const colorToken = highlighted ? this.state.theme.colors.primary : this.state.theme.colors.border;
     this.state.editor.borderHighlighted = highlighted;
-    this.state.editor.borderColor = (s: string) => chalk.hex(colorToken)(s);
+    this.state.editor.borderColor = (s: string) =>
+      currentTheme.fg(highlighted ? 'primary' : 'border', s);
     this.state.ui.requestRender();
   }
 
-  applyTheme(theme: Theme, resolved?: ResolvedTheme): void {
-    const nextTheme = createKimiTUIThemeBundle(theme, resolved);
-    Object.assign(this.state.theme.colors, nextTheme.colors);
-    this.state.theme.resolvedTheme = nextTheme.resolvedTheme;
-    this.state.theme.styles = nextTheme.styles;
-    this.state.theme.markdownTheme = nextTheme.markdownTheme;
-    this.setAppState({ theme });
+  async applyTheme(themeName: ThemeName, resolved?: ResolvedTheme): Promise<void> {
+    const palette = await getColorPalette(
+      themeName === 'auto' ? (resolved ?? 'dark') : themeName,
+    );
+    currentTheme.setPalette(palette);
+    this.setAppState({ theme: themeName });
     this.updateEditorBorderHighlight();
+    // Force every historical message to re-render so Markdown/Text caches
+    // (which hold old ANSI colour codes) are cleared.
+    this.state.transcriptContainer.invalidate();
     this.state.ui.requestRender(true);
   }
 
   refreshTerminalThemeTracking(): void {
     this.stopTerminalThemeTracking();
-    if (this.state.appState.theme !== 'auto') return;
+    if (!isBuiltInTheme(this.state.appState.theme) || this.state.appState.theme !== 'auto') return;
 
     this.terminalThemeTrackingDispose = installTerminalThemeTracking(this.state, (resolved) => {
-      this.applyResolvedAutoTheme(resolved);
+      void this.applyResolvedAutoTheme(resolved);
     });
   }
 
@@ -1635,10 +1627,16 @@ export class KimiTUI {
     this.terminalThemeTrackingDispose = undefined;
   }
 
-  private applyResolvedAutoTheme(resolved: ResolvedTheme): void {
+  private async applyResolvedAutoTheme(resolved: ResolvedTheme): Promise<void> {
     if (this.state.appState.theme !== 'auto') return;
-    if (this.state.theme.resolvedTheme === resolved) return;
-    this.applyTheme('auto', resolved);
+    const palette = getBuiltInPalette(resolved);
+    if (currentTheme.palette === palette) return;
+    currentTheme.setPalette(palette);
+    this.updateEditorBorderHighlight();
+    // Repaint already-rendered transcript entries (status/markdown caches hold
+    // old ANSI codes), matching applyTheme()'s behaviour.
+    this.state.transcriptContainer.invalidate();
+    this.state.ui.requestRender(true);
   }
 
   private shouldShowTerminalProgress(effectiveMode: EffectiveActivityPaneMode): boolean {
@@ -1728,7 +1726,6 @@ export class KimiTUI {
         plan,
         sourceHome: plan.sourceHome,
         targetHome: this.harness.homeDir,
-        colors: this.state.theme.colors,
         skipDecisionStep: this.migrateOnly,
         requestRender: () => {
           this.state.ui.requestRender();
@@ -1761,7 +1758,6 @@ export class KimiTUI {
     this.mountEditorReplacement(
       new HelpPanelComponent({
         commands: this.getSlashCommands(),
-        colors: this.state.theme.colors,
         onClose: () => {
           this.hideHelpPanel();
         },
@@ -1815,7 +1811,6 @@ export class KimiTUI {
         sessions: this.state.sessions,
         loading: this.state.loadingSessions,
         currentSessionId: this.state.appState.sessionId,
-        colors: this.state.theme.colors,
         onSelect: (sessionId: string) => {
           void this.resumeSession(sessionId).then((switched) => {
             if (switched) {
@@ -1841,7 +1836,6 @@ export class KimiTUI {
       (response: ApprovalPanelResponse) => {
         this.approvalController.respond(adaptPanelResponse(response));
       },
-      this.state.theme.colors,
       () => {
         this.toggleToolOutputExpansion();
       },
@@ -1873,7 +1867,6 @@ export class KimiTUI {
     const viewer = new ApprovalPreviewViewer(
       {
         block,
-        colors: this.state.theme.colors,
         onClose: () => {
           this.closeApprovalPreview();
         },
@@ -1910,8 +1903,7 @@ export class KimiTUI {
       (response) => {
         this.questionController.respond(response);
       },
-      this.state.theme.colors,
-      undefined,
+      6,
       () => {
         this.toggleToolOutputExpansion();
       },
